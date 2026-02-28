@@ -1,0 +1,42 @@
+# Default settings for proxy_mistral
+
+# Meeting BaaS configuration
+meeting_baas:
+  api_key: ""
+  base_url: "https://api.meetingbaas.com/v1"
+  audio_format: "s16le"
+  sample_rate: 16000
+
+# Mistral AI configuration
+mistral:
+  api_key: ""
+  model: "mistral-medium-2505"
+  temperature: 0.3
+  max_tokens: 4096
+
+# ElevenLabs configuration
+elevenlabs:
+  api_key: ""
+  voice_id: ""
+  model: "eleven_turbo_v2_5"
+  stability: 0.5
+  similarity_boost: 0.75
+
+# Application settings
+app:
+  log_level: "INFO"
+  data_dir: "data"
+  max_context_tokens: 256000
+  context_compression_threshold: 0.7
+
+# Default persona
+persona:
+  default: "default"
+  communication_style:
+    tone: "professional but friendly"
+    verbosity: "concise"
+    formality: "semi-formal"
+  rules:
+    - "Never commit to deadlines without saying 'I'll confirm the timeline'"
+    - "Always note action items assigned to me"
+    - "If unsure about specifics, give best estimate and say 'I'll confirm the details'"
