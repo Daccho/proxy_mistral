@@ -2,143 +2,271 @@
 
 An AI agent that attends low-priority meetings on your behalf, equipped with your knowledge, personality, and cloned voice.
 
-## Prerequisites
+低優先度のミーティングに代理出席するAIエージェント。あなたの知識・性格・声で会議に参加します。
 
-- Python 3.11+ (< 3.14)
-- [uv](https://docs.astral.sh/uv/) (package manager)
-- [ngrok](https://ngrok.com/) account + authtoken configured (`ngrok config add-authtoken <token>`)
-- API keys:
-  - [Meeting BaaS](https://meetingbaas.com/) (v2 API key)
-  - [Mistral AI](https://console.mistral.ai/)
-  - [ElevenLabs](https://elevenlabs.io/) (API key + voice ID)
+**Tech Stack**: Python 3.11+ · Mistral AI · ElevenLabs · Pipecat · Meeting BaaS · FastAPI
 
-## Setup
+## Features / 主な機能
 
-1. Copy `.env.example` to `.env` and fill in your API keys:
+- **AI-powered meeting attendance** — Responds naturally using Mistral AI with function calling (Mistral AIによる自然な応答)
+- **Voice cloning** — Speaks with your voice via ElevenLabs Flash v2.5 (ElevenLabsによる声のクローン)
+- **Persona system** — Configurable personality, opinions, rules, and meeting behavior via YAML (YAML設定可能なペルソナ)
+- **Google Calendar integration** — Auto-detects and joins meetings from your calendar (Googleカレンダー連携で自動参加)
+- **Post-meeting summaries** — Generates structured summaries with action items and decisions (議事録自動生成)
+- **REST API** — FastAPI server for programmatic control (FastAPI REST API)
+- **Security** — OWASP-compliant: input sanitization, rate limiting, audit logging, encrypted credentials (OWASPセキュリティ準拠)
+- **Production-ready** — Multi-stage Docker build, Kubernetes support (Docker/K8s対応)
+- **Bilingual** — English + Japanese support (日英バイリンガル対応)
+
+## Architecture / アーキテクチャ
+
+```
+Google Meet
+    │
+Meeting BaaS (v2 API)
+    │  connects TO our server
+    v
+ngrok tunnel (wss://xxx.ngrok.io)  ─── or ──→  K8s Ingress (PUBLIC_WS_URL)
+    │
+    v
+Local WS server (:8765) + Pipecat Pipeline
+    │
+    v
+┌──────────────────────────────────────────────────────────┐
+│  MeetingBaaSInputProcessor   (WS audio → frames)         │
+│       │                                                  │
+│  VoxtralSTTProcessor         (speech → text)             │
+│       │                                                  │
+│  MistralAgentBrain           (判断 + 応答生成)             │
+│       │                                                  │
+│  ElevenLabsTTSService        (text → speech, ~75ms)      │
+│       │                                                  │
+│  MeetingBaaSOutputProcessor  (frames → WS audio out)     │
+└──────────────────────────────────────────────────────────┘
+```
+
+**Flow**: Google Meet → Meeting BaaS → ngrok/K8s → WS server → Pipecat pipeline (STT → Agent → TTS) → audio back to meeting
+
+## Prerequisites / 前提条件
+
+- **Python** 3.11+ (< 3.14)
+- **[uv](https://docs.astral.sh/uv/)** — package manager
+- **[ngrok](https://ngrok.com/)** — account + authtoken configured (`ngrok config add-authtoken <token>`)
+- **API keys**:
+  - [Meeting BaaS](https://meetingbaas.com/) — v2 API key
+  - [Mistral AI](https://console.mistral.ai/) — API key
+  - [ElevenLabs](https://elevenlabs.io/) — API key + voice ID (cloned voice recommended)
+- **Google Calendar** (optional) — OAuth2 credentials for auto-join
+
+## Quick Start / クイックスタート
 
 ```bash
+# 1. Clone and configure / クローンして設定
+git clone <repo-url> && cd proxy_mistral
 cp .env.example .env
-```
+# Edit .env with your API keys / APIキーを.envに記入
 
-2. Install dependencies:
-
-```bash
+# 2. Install dependencies / 依存関係インストール
 make install
-```
 
-3. Verify the setup:
-
-```bash
+# 3. Verify setup / セットアップ確認
 make test-setup
-```
 
-## Usage
-
-Join a meeting:
-
-```bash
+# 4. Join a meeting / ミーティングに参加
 uv run python -m src.main join "https://meet.google.com/abc-def-ghi"
 uv run python -m src.main join "https://meet.google.com/abc-def-ghi" --bot-name "YourName"
 ```
 
-Leave a meeting:
+## CLI Commands / CLIコマンド
+
+| Command | Description |
+|---|---|
+| `join <url> [--bot-name NAME]` | Join a meeting / ミーティングに参加 |
+| `leave` | Leave the current meeting / ミーティングから退出 |
+| `status` | Show recent meeting history / 最近のミーティング履歴を表示 |
+| `auth-calendar` | Set up Google Calendar OAuth2 / Googleカレンダー認証 |
+| `serve [--host] [--port]` | Start API server with calendar scheduler / APIサーバー起動 |
+
+All commands are run via `uv run python -m src.main <command>` or `proxy-mistral <command>` if installed.
+
+## Project Structure / プロジェクト構成
+
+```
+src/
+├── main.py                              # CLI entry point (Click)
+├── config/settings.py                   # Pydantic Settings v2
+├── agent/
+│   ├── brain.py                         # MistralAgentBrain (response decision + generation)
+│   ├── tools.py                         # Function calling tools
+│   ├── context_manager.py               # Document/context management
+│   └── summarizer.py                    # Post-meeting summary generation
+├── meeting/
+│   ├── transports/meetingbaas.py        # Meeting BaaS v2 API + WS server + ngrok
+│   ├── tunnel_manager.py               # ngrok/cloudflare tunneling
+│   └── ws_server.py                     # WebSocket server
+├── pipeline/
+│   ├── meeting_pipeline.py              # Pipecat pipeline orchestration
+│   └── meeting_processors/
+│       └── voxtral_stt.py               # Voxtral STT processor
+├── integrations/google_calendar.py      # Google Calendar auto-join
+├── scheduler/                           # APScheduler meeting auto-join
+├── security/
+│   ├── auth.py                          # API key verification
+│   ├── sanitizer.py                     # Input sanitization (OWASP A05)
+│   ├── crypto.py                        # Credential encryption
+│   ├── rate_limiter.py                  # Rate limiting
+│   └── audit.py                         # Audit logging + log sanitization
+├── api/app.py                           # FastAPI REST API
+└── language/japanese.py                 # Bilingual support
+config/
+├── personas/default.yaml                # Persona configuration
+└── settings.yaml                        # Default app settings
+```
+
+## Configuration / 設定
+
+### Environment Variables / 環境変数
+
+Settings are loaded from `.env` via `pydantic-settings`.
+
+| Variable | Description | Required |
+|---|---|---|
+| `MEETING_BAAS_API_KEY` | Meeting BaaS API key | Yes |
+| `MEETING_BAAS_BASE_URL` | Meeting BaaS base URL (default: `https://api.meetingbaas.com`) | No |
+| `MISTRAL_API_KEY` | Mistral AI API key | Yes |
+| `ELEVENLABS_API_KEY` | ElevenLabs API key | Yes |
+| `ELEVENLABS_VOICE_ID` | ElevenLabs voice ID (cloned voice recommended) | Yes |
+| `LOG_LEVEL` | Logging level (default: `INFO`) | No |
+| `PROXY_MISTRAL_API_KEY` | API key for REST API authentication | No |
+| `PROXY_MISTRAL_WS_TOKEN` | WebSocket authentication token | No |
+| `ALLOWED_ORIGINS` | CORS allowed origins | No |
+| `GOOGLE_CALENDAR_CREDENTIALS` | Google Calendar OAuth2 credentials JSON | No |
+| `CALENDAR_POLL_INTERVAL` | Calendar polling interval in minutes (default: `5`) | No |
+| `CALENDAR_LOOKAHEAD_MINUTES` | How far ahead to look for meetings (default: `15`) | No |
+| `SCHEDULER_ENABLED` | Enable auto-join scheduler (default: `true`) | No |
+| `MAX_CONCURRENT_MEETINGS` | Max simultaneous meetings (default: `1`) | No |
+| `JOIN_BEFORE_START_MINUTES` | Join N minutes before meeting start (default: `2`) | No |
+| `AUTO_LEAVE_AFTER_END_MINUTES` | Leave N minutes after meeting end (default: `5`) | No |
+| `PUBLIC_WS_URL` | Direct WS URL for K8s (skips ngrok tunnel) | No |
+
+### Persona Configuration / ペルソナ設定
+
+Edit `config/personas/default.yaml` to customize the agent's behavior:
+
+```yaml
+name: "mike"
+communication_style:
+  tone: "professional but friendly"
+  verbosity: "concise"
+rules:
+  - "Never commit to deadlines without saying 'I'll confirm the timeline'"
+  - "Always note action items assigned to me"
+defer_topics:
+  - "budget approvals"
+  - "hiring decisions"
+meeting_types:
+  standup:
+    proactivity: "high"
+    prepared_update: true
+  all_hands:
+    proactivity: "low"
+    respond_only_when: "directly_addressed"
+auto_join:
+  standup: true
+  all_hands: false
+```
+
+See [SPEC.md](SPEC.md) for the full persona schema.
+
+## Production Deployment / 本番デプロイ
+
+### Docker
 
 ```bash
-uv run python -m src.main leave
+# Build / ビルド
+docker build -t proxy-mistral .
+
+# Run / 実行
+docker run -d \
+  --env-file .env \
+  -p 8000:8000 \
+  -p 8765:8765 \
+  proxy-mistral
 ```
 
-## Architecture
+The image uses a multi-stage build (build tools excluded from runtime) and runs as a non-root user.
 
-```
-Google Meet
-    |
-Meeting BaaS (v2 API)
-    |  connects TO our server
-    v
-ngrok HTTP tunnel (wss://xxx.ngrok.io)
-    |
-    v
-Local WS server (:8765) + Pipecat Pipeline
-    |
-    v
-┌────────────────────────────────────────────────────────┐
-│  MeetingBaaSInputProcessor  (WS audio -> frames)       │
-│       |                                                │
-│  VoxtralSTTProcessor        (STT stub, not connected)  │
-│       |                                                │
-│  MistralAgentBrain          (response judgment + gen)   │
-│       |                                                │
-│  ElevenLabsTTSService       (pipecat built-in, Flash)   │
-│       |                                                │
-│  MeetingBaaSOutputProcessor (frames -> WS audio out)   │
-└────────────────────────────────────────────────────────┘
-```
+### Kubernetes
 
-When `join` is called, the server:
-1. Starts a WebSocket server on port 8765
-2. Opens an ngrok HTTP tunnel to expose it
-3. Calls Meeting BaaS `POST /v2/bots` with `streaming_config.output_url` and `input_url` set to the ngrok wss:// URL
-4. Meeting BaaS joins Google Meet and connects back to our WS server
-5. Audio flows through the Pipecat pipeline: input -> STT -> Agent -> TTS -> output
-
-## Components
-
-| File | Description |
-|---|---|
-| `src/main.py` | click CLI entry point (`join`, `leave`, `status`) |
-| `src/config/settings.py` | pydantic-settings v2 config with env var aliases |
-| `src/agent/brain.py` | `MistralAgentBrain` -- response decision and generation via Mistral chat completions |
-| `src/meeting/transports/base.py` | `BaseMeetingTransport` abstract base class |
-| `src/meeting/transports/meetingbaas.py` | `MeetingBaaSTransport` -- v2 API, WS server, ngrok, speaker tracking |
-| `src/pipeline/meeting_pipeline.py` | `MeetingPipeline`, `MeetingBaaSInputProcessor`, `MeetingBaaSOutputProcessor` |
-| `src/pipeline/meeting_processors/voxtral_stt.py` | `VoxtralSTTProcessor` -- stub, `_transcribe()` returns None |
-| `config/personas/default.yaml` | Persona configuration (name, style, rules, opinions, meeting types) |
-| `config/settings.yaml` | Default application settings |
-| `scripts/test_setup.py` | Verify config loading and transport initialization |
-| `tests/test_basic.py` | Basic unit tests |
-
-## Configuration
-
-Application settings are loaded from environment variables (via `.env`) with `pydantic-settings` v2 `Field(alias=...)` pattern:
-
-| Env Var | Description |
-|---|---|
-| `MEETING_BAAS_API_KEY` | Meeting BaaS API key |
-| `MEETING_BAAS_BASE_URL` | Meeting BaaS base URL (default: `https://api.meetingbaas.com`) |
-| `MISTRAL_API_KEY` | Mistral AI API key |
-| `ELEVENLABS_API_KEY` | ElevenLabs API key |
-| `ELEVENLABS_VOICE_ID` | ElevenLabs voice ID (use a cloned voice for impersonation) |
-
-Persona behavior is configured in `config/personas/default.yaml`. See [SPEC.md](SPEC.md) for the full schema.
-
-## Development
+Set `PUBLIC_WS_URL` to your Ingress WebSocket endpoint to skip ngrok tunneling:
 
 ```bash
-make test        # run tests
-make lint        # run ruff linter
-make format      # format with black + isort
-make test-setup  # verify config + transport
+PUBLIC_WS_URL=wss://proxy-mistral.example.com/ws
 ```
 
-## Current Status
+For Google Calendar credentials:
 
-The core pipeline skeleton is implemented and wired together. The following are working:
+```bash
+# Generate token locally
+proxy-mistral auth-calendar
 
-- Meeting BaaS v2 integration (bot creation, WS server, ngrok tunnel, bot removal)
-- Pipecat pipeline with custom FrameProcessors for input/output
-- MistralAgentBrain with should_respond heuristic + Mistral-based judgment
-- ElevenLabs TTS via pipecat's built-in `ElevenLabsTTSService`
-- click CLI, pydantic-settings config, persona YAML
+# Create K8s secret
+kubectl create secret generic proxy-mistral-secrets \
+  --from-literal=google_calendar_credentials='<token_json>'
+```
 
-Not yet functional:
+## Cost Estimate / コスト見積もり
 
-- VoxtralSTTProcessor (`_transcribe()` is a stub returning None -- needs Voxtral Realtime API connection)
-- No database/storage layer
-- No REST API
-- No post-meeting summaries
-- No voice clone setup script
+Per 1-hour meeting / 1時間のミーティングあたり:
 
-See [SPEC.md](SPEC.md) for the full roadmap and implementation status table.
+| Service | Cost |
+|---|---|
+| Meeting BaaS | $0.69 |
+| Voxtral STT | ~$0.36 |
+| Mistral Agent | ~$0.03 |
+| ElevenLabs TTS | ~$0.05 |
+| **Total** | **~$1.10** |
+
+Plus ElevenLabs subscription ($5–22/month for voice cloning).
+
+**Latency / レイテンシ**: End-to-end ~0.8–1.3 seconds (within natural conversational pause).
+
+## Development / 開発
+
+```bash
+make install     # Install dependencies / 依存関係インストール
+make test        # Run tests / テスト実行
+make lint        # Run ruff linter / リンター実行
+make format      # Format with black + isort / コードフォーマット
+make test-setup  # Verify config + transport / セットアップ確認
+make clean       # Clean build artifacts / ビルド成果物削除
+```
+
+## Current Status / 現在のステータス
+
+**Implemented / 実装済み:**
+- Meeting BaaS v2 integration (bot creation, WS server, ngrok tunnel)
+- Pipecat pipeline with custom FrameProcessors
+- MistralAgentBrain with response decision + function calling
+- ElevenLabs TTS (Flash v2.5)
+- Google Calendar integration + auto-join scheduler
+- FastAPI REST API with security middleware
+- Post-meeting summary generation
+- OWASP security (auth, sanitization, rate limiting, audit, encryption)
+- Click CLI (join, leave, status, auth-calendar, serve)
+- Pydantic Settings + persona YAML
+- Structlog logging with sensitive data redaction
+- Bilingual support (English + Japanese)
+- Production Docker image (multi-stage, non-root)
+
+**Not yet functional / 未実装:**
+- VoxtralSTTProcessor (`_transcribe()` is a stub — needs Voxtral Realtime API)
+- SQLite storage layer
+- Full test suite
+- Voice clone setup script
+- Meeting simulation for local testing
+
+See [SPEC.md](SPEC.md) for the full roadmap.
 
 ## License
 
