@@ -1,0 +1,74 @@
+# Production Makefile for Proxy Mistral
+
+.PHONY: build push deploy test clean
+
+# Configuration
+REGISTRY ?= ghcr.io
+IMAGE_NAME ?= proxy-mistral
+IMAGE_TAG ?= $(shell git rev-parse --short HEAD)
+FULL_IMAGE ?= $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
+
+# Build production Docker image
+build:
+	@echo "Building production Docker image..."
+	docker build -t $(FULL_IMAGE) -f Dockerfile .
+
+# Push Docker image to registry
+push:
+	@echo "Pushing Docker image to registry..."
+	docker push $(FULL_IMAGE)
+
+# Deploy to Kubernetes
+deploy:
+	@echo "Deploying to Kubernetes..."
+	kubectl apply -f kubernetes/deployment.yaml
+
+# Test deployment
+test:
+	@echo "Testing deployment..."
+	kubectl get pods -l app=proxy-mistral
+	kubectl get svc proxy-mistral
+	kubectl get hpa proxy-mistral
+	kubectl get ingress proxy-mistral
+
+# Clean up
+clean:
+	@echo "Cleaning up..."
+	docker rmi $(FULL_IMAGE) 2>/dev/null || true
+	kubectl delete -f kubernetes/deployment.yaml 2>/dev/null || true
+
+# Build and deploy
+build-deploy: build push deploy
+
+# Show logs
+logs:
+	kubectl logs -l app=proxy-mistral --tail=100 -f
+
+# Exec into pod
+exec:
+	kubectl exec -it $(kubectl get pods -l app=proxy-mistral -o jsonpath='{.items[0].metadata.name}') -- /bin/bash
+
+# Port forward
+port-forward:
+	kubectl port-forward svc/proxy-mistral 8000:8000 8765:8765
+
+# Help
+help:
+	@echo "Production Makefile for Proxy Mistral"
+	@echo ""
+	@echo "Usage:"
+	@echo "  make build              - Build production Docker image"
+	@echo "  make push               - Push image to registry"
+	@echo "  make deploy             - Deploy to Kubernetes"
+	@echo "  make test               - Test deployment"
+	@echo "  make clean              - Clean up resources"
+	@echo "  make build-deploy       - Build and deploy"
+	@echo "  make logs               - Show application logs"
+	@echo "  make exec               - Exec into pod"
+	@echo "  make port-forward       - Port forward to local"
+	@echo "  make help               - Show this help"
+	@echo ""
+	@echo "Environment variables:"
+	@echo "  REGISTRY    - Docker registry (default: ghcr.io)"
+	@echo "  IMAGE_NAME  - Image name (default: proxy-mistral)"
+	@echo "  IMAGE_TAG   - Image tag (default: git commit hash)"

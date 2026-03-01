@@ -40,7 +40,12 @@ Your WS Server (local)  <--- exposed via ngrok tunnel
 
 The recommended approach uses Pipecat to orchestrate the full audio pipeline.
 
-### 1.1 Full Pipeline Setup
+### 1.1 Full Pipeline Setup (Reference — Pipecat Standard Pattern)
+
+> **Note:** This shows Pipecat's standard high-level pipeline pattern using Deepgram STT
+> as a reference. Our actual implementation uses custom `FrameProcessor` subclasses
+> (`MeetingBaaSInputProcessor`, `VoxtralSTTProcessor`, `MistralAgentBrain`,
+> `MeetingBaaSOutputProcessor`) — see section 1.2 and the source code in `src/pipeline/`.
 
 ```python
 import os
@@ -50,7 +55,7 @@ from pipecat.pipeline.task import PipelineTask, PipelineParams
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.services.mistral.llm import MistralLLMService
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
-from pipecat.services.deepgram import DeepgramSTTService
+from pipecat.services.deepgram import DeepgramSTTService  # Not in our deps; reference only
 from pipecat.processors.aggregators.llm_context import (
     LLMContext,
     LLMContextAggregatorPair,
@@ -61,7 +66,7 @@ from pipecat.frames.frames import LLMRunFrame
 
 
 async def run_pipeline(transport):
-    # STT: Deepgram (or replace with Voxtral for Mistral-native STT)
+    # STT: Deepgram (reference — our implementation uses VoxtralSTTProcessor instead)
     stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
 
     # LLM: Mistral
@@ -712,7 +717,7 @@ endpoint which required base64-encoded MP3).
 # .env file
 MISTRAL_API_KEY=your_mistral_api_key
 ELEVENLABS_API_KEY=your_elevenlabs_api_key
-DEEPGRAM_API_KEY=your_deepgram_api_key       # if using Deepgram STT
+# DEEPGRAM_API_KEY=...                       # not used; reference only (we use Voxtral STT)
 MEETING_BAAS_API_KEY=your_meetingbaas_api_key # from dashboard.meetingbaas.com
 NGROK_AUTHTOKEN=your_ngrok_authtoken         # required for local WS tunnel
 ```
@@ -723,7 +728,7 @@ NGROK_AUTHTOKEN=your_ngrok_authtoken         # required for local WS tunnel
 # requirements.txt
 mistralai[agents,realtime]
 elevenlabs
-pipecat-ai[mistral,elevenlabs,daily,silero]
+pipecat-ai[mistral,elevenlabs]
 websockets
 requests
 python-dotenv

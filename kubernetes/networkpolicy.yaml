@@ -1,0 +1,34 @@
+# A05: Network-level isolation for proxy-mistral pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: proxy-mistral-netpol
+  labels:
+    app: proxy-mistral
+spec:
+  podSelector:
+    matchLabels:
+      app: proxy-mistral
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow traffic only on API and WebSocket ports
+    - ports:
+        - port: 8000
+          protocol: TCP
+        - port: 8765
+          protocol: TCP
+  egress:
+    # Allow HTTPS to external APIs (Mistral, MeetingBaaS, Google, ElevenLabs)
+    - ports:
+        - port: 443
+          protocol: TCP
+        - port: 80
+          protocol: TCP
+    # Allow DNS resolution
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP

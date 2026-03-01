@@ -3,7 +3,8 @@
 # Meeting BaaS configuration
 meeting_baas:
   api_key: ""
-  base_url: "https://api.meetingbaas.com/v1"
+  base_url: "https://api.meetingbaas.com"
+  bot_image: ""
   audio_format: "s16le"
   sample_rate: 16000
 
@@ -18,7 +19,7 @@ mistral:
 elevenlabs:
   api_key: ""
   voice_id: ""
-  model: "eleven_turbo_v2_5"
+  model: "eleven_flash_v2_5"
   stability: 0.5
   similarity_boost: 0.75
 
@@ -28,6 +29,19 @@ app:
   data_dir: "data"
   max_context_tokens: 256000
   context_compression_threshold: 0.7
+
+# Google Calendar
+google_calendar:
+  poll_interval_minutes: 5
+  lookahead_minutes: 15
+
+# Scheduler
+scheduler:
+  enabled: true
+  max_concurrent_meetings: 1
+  join_before_start_minutes: 2
+  auto_leave_after_end_minutes: 5
+  default_persona: "default"
 
 # Default persona
 persona:

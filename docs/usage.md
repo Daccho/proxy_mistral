@@ -1,28 +1,21 @@
-# Development & Verification Guide
+# E2E Manual Test Guide
 
 ## Prerequisites
 
-### Required Knowledge
-- **Pipecat**: Frame-based real-time voice pipeline framework. Understand processors, pipelines, and frame types. See [Pipecat docs](https://docs.pipecat.ai/).
-- **Mistral Agents API**: Agent creation, conversations, function calling, Document Library. See [Mistral docs](https://docs.mistral.ai/agents/).
-- **ElevenLabs SDK**: TTS streaming, Voice Cloning. See [ElevenLabs docs](https://elevenlabs.io/docs/).
-- **Meeting BaaS**: Bot creation, WebSocket audio streams. See [Meeting BaaS docs](https://docs.meetingbaas.com/).
-
 ### System Requirements
 - Python 3.11+
-- [uv](https://github.com/astral-sh/uv) (package manager)
-- [ngrok](https://ngrok.com/) (for development tunneling)
-  - Install: `brew install ngrok`
-  - Sign up for an account at [dashboard.ngrok.com/signup](https://dashboard.ngrok.com/signup)
-  - Add your authtoken: `ngrok config add-authtoken <YOUR_TOKEN>`
-- ffmpeg (for audio format conversion)
+- [uv](https://github.com/astral-sh/uv)
+- [ngrok](https://ngrok.com/) — `brew install ngrok`
+- Google Chrome (Google Meet用)
 
-### API Keys Required
-| Service | Key | How to Get |
+### API Keys
+
+| Service | Env Var | 取得先 |
 |---|---|---|
 | Mistral AI | `MISTRAL_API_KEY` | [console.mistral.ai](https://console.mistral.ai/) |
 | ElevenLabs | `ELEVENLABS_API_KEY` | [elevenlabs.io/app/settings/api-keys](https://elevenlabs.io/app/settings/api-keys) |
-| Meeting BaaS | `MEETING_BAAS_API_KEY` | [dashboard.meetingbaas.com](https://dashboard.meetingbaas.com/) (v2 dashboard) |
+| ElevenLabs Voice | `ELEVENLABS_VOICE_ID` | ElevenLabs Voice Library から取得 |
+| Meeting BaaS | `MEETING_BAAS_API_KEY` | [meetingbaas.com](https://meetingbaas.com/) v2 dashboard |
 
 ## Environment Setup
 
@@ -30,178 +23,299 @@
 # 1. Install dependencies
 uv sync
 
-# 2. Copy and fill in environment variables
+# 2. .env を作成
 cp .env.example .env
-# Edit .env with your API keys:
+# .env を編集して API キーを設定:
 #   MISTRAL_API_KEY=...
 #   ELEVENLABS_API_KEY=...
+#   ELEVENLABS_VOICE_ID=...
 #   MEETING_BAAS_API_KEY=...
+#   ENVIRONMENT=development
 
-# 3. Set up ngrok (one-time)
-#    Sign up at https://dashboard.ngrok.com/signup
-#    Then add your authtoken:
+# 3. ngrok authtoken を設定 (初回のみ)
 ngrok config add-authtoken <YOUR_TOKEN>
-#    Note: ngrok is started automatically by pyngrok — no separate terminal needed.
+# ※ ngrok は pyngrok が自動起動するので手動起動は不要
+```
 
-# 4. Verify configuration
+## Pre-flight Checks
+
+テスト前にAPIキーの疎通を確認する。
+
+```bash
+# Mistral API
+uv run python -c "
+from mistralai import Mistral
+c = Mistral(api_key='YOUR_KEY')
+print(c.models.list())
+"
+
+# ElevenLabs voices
+uv run python -c "
+from elevenlabs import ElevenLabs
+c = ElevenLabs(api_key='YOUR_KEY')
+for v in c.voices.get_all().voices[:5]:
+    print(v.name, v.voice_id)
+"
+
+# Meeting BaaS
+uv run python -c "
+import requests
+r = requests.get('https://api.meetingbaas.com/v2/bots', headers={'x-meeting-baas-api-key': 'YOUR_KEY'})
+print(r.status_code, r.text[:200])
+"
+
+# Configuration validation
 uv run python scripts/test_setup.py
-
-# 5. Join a meeting
-uv run python -m src.main join "https://meet.google.com/xxx-xxxx-xxx"
 ```
 
-## Verification Steps
+## E2E Manual Test Procedure
 
-### Step 1: Meeting BaaS Connection Test
+### Step 1: Google Meet を作成
 
-Verify that a bot can join a Google Meet and that we receive audio.
+1. [Google Meet](https://meet.google.com/) で新しいミーティングを作成
+2. ミーティングURLをコピー (例: `https://meet.google.com/abc-defg-hij`)
+3. 自分がミーティングに参加した状態にしておく
+
+### Step 2: Bot を参加させる
 
 ```bash
-# Create a test Google Meet and get the URL
-# Then run:
-uv run python -m src.main join "https://meet.google.com/xxx-xxxx-xxx"
+uv run python -m src.main join "https://meet.google.com/abc-defg-hij" --bot-name "daccho-proxy"
 ```
 
-**Expected result**: Bot joins the meeting. You see it as a participant. Console logs show WebSocket connection established and audio frames received.
+**確認ポイント (ログ)**:
+```
+Starting proxy mistral...
+WebSocket server started on port 8765
+ngrok tunnel: wss://xxxx.ngrok-free.app
+Bot created: <bot_id>
+Joined meeting: {...}
+Setting up meeting pipeline...
+Meeting pipeline setup complete (meeting_id=...)
+Starting meeting pipeline...
+MistralAgentBrain initialized (persona=daccho, meeting_type=default)
+```
 
-**What to check**:
-- Bot appears in the meeting with the configured name
-- Entry message appears in chat
-- Console shows `audio_separate_raw` frames arriving
-- Audio format is 16kHz mono S16LE PCM (base64)
+**確認ポイント (Google Meet 画面)**:
+- Bot が参加者リストに表示される
+- チャットに `"This meeting is being recorded by an AI assistant."` が表示される
+- `Meeting BaaS connected to our WebSocket server` がログに出る
 
-### Step 2: STT (Voxtral Realtime)
+### Step 3: STT テスト (音声→テキスト)
 
-VoxtralSTTProcessor is currently a stub. It needs integration with the Voxtral Realtime API once available.
+1. マイクをONにして何か話す (例: "Hello, can you hear me?")
+2. ログを確認:
 
-**Current state**: The STT processor exists as a placeholder FrameProcessor in the pipeline. It receives audio frames but does not yet perform real transcription.
+```
+First audio chunk received (3200 bytes)          ← meetingbaas.py
+First audio frame received from: <your_name>     ← MeetingBaaSInputProcessor
+VoxtralSTT: receiving audio from pipeline        ← VoxtralSTTProcessor
+VoxtralSTT started (model=..., delay=1000ms)     ← 初回のみ
+Voxtral Realtime session created                 ← API接続成功
+STT final: [<your_name>] Hello, can you hear me? ← 最終認識結果
+```
 
-**What to check when implemented**:
-- Transcription accuracy is reasonable
-- Streaming results arrive incrementally (not all at once)
-- Latency from audio chunk sent to first text result
-- Language detection works (English and Japanese)
+**確認ポイント**:
+- `First audio chunk received` が出る → Meeting BaaS からバイナリ音声が到着
+- `First audio frame received` が出る → InputProcessor がパイプラインにフレームを送信
+- `VoxtralSTT: receiving audio from pipeline` が出る → STTが音声を受信
+- `Voxtral Realtime session created` が出る → Voxtral API に接続成功
+- `STT final:` が出る → 文字起こし成功
 
-### Step 3: TTS (ElevenLabs)
+**ログが途中で止まる場合**:
+- `First audio chunk` が出ない → Meeting BaaS WebSocket は接続されたが音声が来ていない (マイクON確認)
+- `First audio frame` が出ない → `get_audio_stream()` がブロックしている
+- `VoxtralSTT: receiving audio` が出ない → Pipecat パイプラインのフレーム伝搬に問題
+- `Voxtral Realtime session` が出ない → Mistral API key か Voxtral エンドポイントに問題
 
-ElevenLabs TTS is integrated via Pipecat's built-in ElevenLabs service. Test by joining a meeting and triggering a response.
+### Step 4: Agent Brain テスト (応答判定 + 生成)
 
-**Expected result**: Agent produces spoken audio in the meeting when it decides to respond.
+Bot に直接話しかけて応答を確認する。
 
-**What to check**:
-- Audio quality is good
-- Latency from request to first audio chunk (~75ms for Flash v2.5)
-- Output format matches what Meeting BaaS expects
+**テストケース A: 名前で呼ぶ**
+> "daccho, what do you think about this?"
 
-### Step 4: Voice Clone Setup
+期待: Bot が応答する (名前一致で `_should_respond` → `True`)
 
-Voice cloning is not yet implemented. This is a TODO item.
+**テストケース B: 一般的な質問**
+> "Can you summarize what we discussed?"
 
-### Step 5: Pipeline Integration Test
+期待: `direct_markers` に "can you" が含まれるので応答する
 
-Test the full pipeline by joining a real meeting and observing behavior.
+**テストケース C: Bot に関係ない発言**
+> "I had lunch at the new ramen place."
+
+期待: 応答しない (`_should_respond` → `False`)
+
+**テストケース D: defer_topics**
+> "daccho, can you approve the budget for this project?"
+
+期待: `defer_to_user` ツールが呼ばれ、「確認して折り返します」的な応答
+
+**確認ポイント (ログ)**:
+```
+# 応答時
+Recorded action item: ... (assigned to: ...)   ← note_action_item ツール
+Recorded decision: ...                          ← note_decision ツール
+Deferred question: ... (reason: ...)            ← defer_to_user ツール
+```
+
+### Step 5: TTS テスト (テキスト→音声)
+
+Agent が応答を生成すると、ElevenLabs TTS で音声に変換されてミーティングに送信される。
+
+**確認ポイント**:
+- Bot の音声が Google Meet で聞こえる
+- 音質が自然で聞き取れる
+- レイテンシが許容範囲内 (2秒以内)
+- `Sent audio response: <N> bytes` がログに出る
+
+### Step 6: ミーティング終了
+
+`Ctrl+C` でプロセスを停止する。
+
+```
+Received keyboard interrupt, leaving meeting...
+Meeting pipeline stopped
+```
+
+**Post-meeting summary が生成される**:
+```
+Generated summary for meeting: Meeting https://meet.google.com/...
+Post-meeting summary generated:
+# Meeting https://meet.google.com/...
+**Meeting ID:** <uuid>
+**Date:** ...
+**Participants:** ...
+
+## Executive Summary
+...
+
+## Action Items
+- ...
+
+## Decisions
+- ...
+```
+
+**確認ポイント**:
+- `MeetingSummarizer` が Mistral AI を呼んでサマリーを生成
+- アクションアイテム・決定事項が正しく抽出されている
+- Bot が `leave_meeting` APIを呼んで正常退出
+- ngrok tunnel がクリーンアップされる
+
+## Post-meeting Verification
+
+### SQLite データ確認
 
 ```bash
-uv run python -m src.main join "https://meet.google.com/xxx-xxxx-xxx"
+# ミーティング履歴
+sqlite3 data/context.db "SELECT id, title, summary FROM meetings ORDER BY created_at DESC LIMIT 5;"
+
+# 文字起こし
+sqlite3 data/context.db "SELECT speaker, text FROM transcripts WHERE meeting_id='<meeting_id>' LIMIT 20;"
+
+# CLI での確認
+uv run python -m src.main status
 ```
 
-**Expected result**: Bot joins, receives audio, processes it through the pipeline, and generates spoken responses where appropriate.
+### ログの全体フロー
 
-**What to check**:
-- Full pipeline latency (target: <1.3s end-to-end)
-- Agent correctly decides when to respond (should_respond logic)
-- Agent correctly decides when to stay silent
-- Response content is contextually appropriate
+正常なE2Eフローでは以下の順でログが出る:
 
-### Step 6: E2E Test (Real Google Meet)
-
-Full end-to-end test with a real meeting.
-
-```bash
-uv run python -m src.main join "https://meet.google.com/xxx-xxxx-xxx"
-```
-
-**Expected result**: Bot joins, listens, responds when addressed, and generates summary after meeting ends.
-
-**What to check**:
-- Bot joins and appears in participant list
-- Audio from other participants is received and transcribed
-- Agent responds only when addressed (passive mode)
-- Response audio plays in the meeting
-- No echo or feedback loops
+1. `Starting proxy mistral...`
+2. `WebSocket server started on port 8765`
+3. `ngrok tunnel: wss://...`
+4. `Bot created: <bot_id>`
+5. `Meeting pipeline setup complete`
+6. `MistralAgentBrain initialized`
+7. `Meeting BaaS connected to our WebSocket server`
+8. `VoxtralSTT: Connecting to Voxtral Realtime...`
+9. `VoxtralSTT: transcription_segment ...` (話すたびに)
+10. `Sent audio response: <N> bytes` (応答時)
+11. `Meeting pipeline stopped` (Ctrl+C)
+12. `Post-meeting summary generated: ...`
+13. `Bot <bot_id> removed`
+14. `Left meeting successfully`
 
 ## Latency Targets
 
-**Target latencies**:
 | Component | Target | Acceptable |
 |---|---|---|
 | Voxtral Realtime STT | <200ms | <300ms |
 | Mistral Agent response | <1000ms | <1500ms |
 | ElevenLabs TTS (Flash v2.5) | <75ms | <150ms |
-| **Total** | **<1.3s** | **<2.0s** |
+| **Total E2E** | **<1.3s** | **<2.0s** |
 
 ## Troubleshooting
 
-### Common Issues
+### Bot がミーティングに参加しない
+- `MEETING_BAAS_API_KEY` が正しいか確認
+- Google Meet のURLが正しく、ミーティングがアクティブか確認
+- [Meeting BaaS dashboard](https://meetingbaas.com/) でエラーログ確認
+- ngrok authtoken が設定されているか: `ngrok config check`
 
-**Meeting BaaS bot doesn't join**
-- Check that `MEETING_BAAS_API_KEY` is valid
-- Ensure the Google Meet URL is correct and the meeting is active
-- Check Meeting BaaS dashboard for error logs
-- Verify ngrok authtoken is configured (`ngrok config add-authtoken`)
+### WebSocket に接続されない
+- `streaming_config` の `output_url` / `input_url` がngrokのWSS URLか確認
+- ファイアウォールでポート8765がブロックされていないか確認
+- `Meeting BaaS connected to our WebSocket server` が出ない場合はngrokトンネルに問題がある
 
-**No audio received**
-- Verify WebSocket connection is established (check logs)
-- Ensure `audio_separate_raw` is configured in recording_config
-- Check that participants have their microphones on
-- Verify audio format expectations (16kHz mono S16LE PCM)
+### STT が動作しない
+- `MISTRAL_API_KEY` が有効か確認
+- Voxtral Realtime API のエンドポイントがアクセス可能か確認
+- 音声フォーマットが16kHz mono S16LE PCMか確認
+- マイクがONになっているか
 
-**STT returns empty or garbage**
-- Note: VoxtralSTTProcessor is currently a stub
-- Check audio format matches Voxtral requirements (16kHz mono S16LE PCM)
-- Verify `MISTRAL_API_KEY` is valid
+### TTS で音声が出ない
+- `ELEVENLABS_API_KEY` と `ELEVENLABS_VOICE_ID` が正しいか確認
+- ElevenLabs の使用量クォータを確認
+- まずデフォルトvoiceで試して問題を切り分ける
 
-**TTS doesn't produce audio**
-- Check `ELEVENLABS_API_KEY` is valid
-- Check ElevenLabs usage quota
-- Try with default voice first to isolate issues
+### Agent が応答しない
+- ペルソナ名 (`config/personas/default.yaml` の `name`) で呼びかけているか確認
+- "Can you..." など `direct_markers` に含まれるフレーズで話しかけてみる
+- Mistral API のレスポンスがログに出ているか確認
+- `_should_respond` が `False` を返していないか確認
 
-**Agent doesn't respond when addressed**
-- Check `should_respond` tool logic — does it detect name correctly?
-- Verify persona name matches expected name
-- Check Mistral Agent logs for tool call results
-- Test with explicit name mention: "Hey [name], what do you think?"
+### レイテンシが高い (>2s)
+- ネットワーク環境を確認
+- TTS モデルが `eleven_flash_v2_5` になっているか確認
+- Mistral モデルを `mistral-small-latest` に変更して試す
 
-**High latency (>2s)**
-- Check network latency to API endpoints
-- Verify you're using Flash v2.5 (not standard v2) for TTS
-- Check if Mistral Agent is overloaded (try smaller model)
+### Echo / Feedback loop
+- Meeting BaaS v2 streaming がBot自身の音声を入力から除外しているか確認
+- VAD が Bot の音声を除外しているか確認
 
-**Echo or feedback**
-- Ensure VAD filters out the bot's own audio
-- Check that Meeting BaaS `audio_separate_raw` excludes the bot's stream
-- Verify audio output isn't being looped back into input
+## Architecture Overview
 
-### API Rate Limits
-
-| Service | Limit | Notes |
-|---|---|---|
-| Mistral API | Varies by tier | Check [console.mistral.ai](https://console.mistral.ai/) for your limits |
-| ElevenLabs | Character quota per plan | Starter: 30K chars/mo, Creator: 100K chars/mo |
-| Meeting BaaS | 4h free, then $0.69/h | No rate limit, but cost-aware |
-
-### Useful Debug Commands
-
-```bash
-# Check Mistral API key validity
-uv run python -c "from mistralai import Mistral; c = Mistral(); print(c.models.list())"
-
-# List ElevenLabs voices
-uv run python -c "from elevenlabs import ElevenLabs; c = ElevenLabs(); [print(v.name, v.voice_id) for v in c.voices.get_all().voices]"
-
-# Verify ngrok authtoken is configured
-ngrok config check
-
-# Verify project configuration
-uv run python scripts/test_setup.py
 ```
+Google Meet
+    ↓ (Meeting BaaS v2 WebSocket)
+MeetingBaaSTransport (WS Server on :8765 via ngrok)
+    ↓ audio_queue
+MeetingBaaSInputProcessor (Pipecat FrameProcessor)
+    ↓ InputAudioRawFrame
+VoxtralSTTProcessor (Voxtral Realtime API)
+    ↓ TranscriptionFrame
+MistralAgentBrain (Mistral chat.complete + function calling)
+    ↓ TextFrame
+ElevenLabsTTSService (ElevenLabs Flash v2.5)
+    ↓ TTSAudioRawFrame
+MeetingBaaSOutputProcessor → send_audio() → Meeting → Google Meet
+```
+
+**Post-meeting:**
+```
+MistralAgentBrain.get_transcript() + get_recorded_data()
+    ↓
+MeetingSummarizer (Mistral AI)
+    ↓
+DocumentContextManager (SQLite + FTS5)
+```
+
+## Cost Estimates (per 1h meeting)
+
+| Service | Estimate | Notes |
+|---|---|---|
+| Meeting BaaS | $0.69/h (有料時) | 最初4hは無料 |
+| Mistral AI | ~$0.50-2.00 | モデルとトークン量による |
+| ElevenLabs | ~30K chars | Starter plan: 30K chars/月 |

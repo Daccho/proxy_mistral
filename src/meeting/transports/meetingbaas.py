@@ -6,9 +6,8 @@ from typing import AsyncIterator, Dict, Any, Optional, List
 import requests
 import websockets
 
-from pyngrok import ngrok
-
 from .base import BaseMeetingTransport
+from src.meeting.tunnel_manager import TunnelManager
 from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -24,23 +23,35 @@ class MeetingBaaSTransport(BaseMeetingTransport):
     - Meeting BaaS connects TO our WS server and streams audio
     """
 
-    def __init__(self):
+    def __init__(self, ws_port: Optional[int] = None, public_ws_url: Optional[str] = None):
         self.api_key = settings.meeting_baas.api_key
         self.base_url = settings.meeting_baas.base_url
-        self.ws_port = settings.meeting_baas.ws_port
+        self.ws_port = ws_port or settings.meeting_baas.ws_port
         self.bot_id: Optional[str] = None
+        # Production: use direct public URL (K8s Ingress); dev: use ngrok
+        self._public_ws_url = public_ws_url or settings.meeting_baas.public_ws_url or None
 
         # WebSocket server state
         self._ws_server = None
-        self._ngrok_tunnel = None
+        self._tunnel_manager: Optional[TunnelManager] = None
         self._output_ws: Optional[websockets.WebSocketServerProtocol] = None
         self._input_ws: Optional[websockets.WebSocketServerProtocol] = None
+
+        # Track all WebSocket connections for input/output detection
+        self._all_ws_connections: set = set()
 
         # Audio queue for get_audio_stream()
         self._audio_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
 
         # Speaker tracking
         self._current_speakers: List[Dict[str, Any]] = []
+        self._last_known_speaker: Optional[Dict[str, Any]] = None
+
+        # Audio chunk counter for trace logging
+        self._audio_chunk_count: int = 0
+
+        # Track whether any WS connection was ever established
+        self._ws_ever_connected: bool = False
 
     async def join_meeting(
         self,
@@ -59,12 +70,15 @@ class MeetingBaaSTransport(BaseMeetingTransport):
         )
         logger.info(f"WebSocket server started on port {self.ws_port}")
 
-        # 2. Create ngrok tunnel (HTTP, free tier compatible)
-        self._ngrok_tunnel = ngrok.connect(self.ws_port, "http")
-        ngrok_url = self._ngrok_tunnel.public_url
-        # Convert https:// to wss:// (or http:// to ws://)
-        ws_url = ngrok_url.replace("https://", "wss://").replace("http://", "ws://")
-        logger.info(f"ngrok tunnel: {ws_url}")
+        # 2. Determine public WebSocket URL
+        if self._public_ws_url:
+            # Production: use K8s Ingress URL directly (no ngrok)
+            ws_url = self._public_ws_url
+            logger.info(f"Using direct public WS URL: {ws_url}")
+        else:
+            # Development: create tunnel (cloudflared → localtunnel fallback)
+            self._tunnel_manager = TunnelManager()
+            ws_url = await self._tunnel_manager.start_tunnel(self.ws_port)
 
         # 3. Create bot via Meeting BaaS v2 API
         bot_config: Dict[str, Any] = {
@@ -76,11 +90,13 @@ class MeetingBaaSTransport(BaseMeetingTransport):
                 "input_url": ws_url,
                 "audio_frequency": 16000,
             },
+            "entry_message": "This meeting is being recorded by an AI assistant.",
         }
         if bot_image:
             bot_config["bot_image"] = bot_image
 
-        response = requests.post(
+        response = await asyncio.to_thread(
+            requests.post,
             f"{self.base_url}/v2/bots",
             json=bot_config,
             headers={
@@ -103,50 +119,85 @@ class MeetingBaaSTransport(BaseMeetingTransport):
     ):
         """Handle incoming WebSocket connection from Meeting BaaS.
 
-        Meeting BaaS sends:
-        - JSON strings: speaker metadata [{name, id, timestamp, isSpeaking}]
-        - Binary data: raw PCM audio (16kHz mono 16-bit)
+        Meeting BaaS opens multiple connections. We auto-detect which one
+        sends binary audio (output channel) and which doesn't (input channel).
         """
-        self._output_ws = websocket
-        logger.info("Meeting BaaS connected to our WebSocket server")
+        logger.info("Meeting BaaS connected (path=%s)", path)
+
+        # Track whether this connection has sent binary audio
+        is_audio_source = False
+        self._all_ws_connections.add(websocket)
 
         try:
             async for message in websocket:
                 if isinstance(message, str):
-                    # JSON: speaker metadata
+                    # JSON: speaker metadata or other control messages
                     try:
-                        speakers = json.loads(message)
-                        self._current_speakers = speakers
-                        # Find the active speaker
-                        active_speaker = next(
-                            (s for s in speakers if s.get("isSpeaking")),
-                            None,
-                        )
-                        if active_speaker:
-                            logger.debug(f"Speaker: {active_speaker.get('name')}")
+                        data = json.loads(message)
+                        if isinstance(data, list) and all(isinstance(s, dict) for s in data):
+                            self._current_speakers = data
+                            active_speaker = next(
+                                (s for s in data if s.get("isSpeaking")),
+                                None,
+                            )
+                            if active_speaker:
+                                self._last_known_speaker = active_speaker
+                                logger.info("Speaker: %s", active_speaker.get("name"))
+                        elif isinstance(data, dict) and "protocol_version" in data:
+                            logger.info("Meeting BaaS JSON message: %s", str(data)[:200])
+                            # If output already identified & this isn't it, it's the input channel
+                            if self._input_ws is None and not is_audio_source and self._output_ws is not None:
+                                self._input_ws = websocket
+                                logger.info("Meeting BaaS input channel identified (late)")
+                        else:
+                            logger.info("Meeting BaaS JSON message: %s", str(data)[:200])
                     except json.JSONDecodeError:
-                        logger.warning(f"Invalid JSON from Meeting BaaS: {message[:100]}")
+                        logger.warning("Invalid JSON from Meeting BaaS: %s", message[:100])
                 else:
-                    # Binary: PCM audio data
+                    # Binary: PCM audio data — this is the output channel
+                    if not is_audio_source:
+                        is_audio_source = True
+                        self._output_ws = websocket
+                        self._ws_ever_connected = True
+                        logger.info("Meeting BaaS audio source identified")
+                        # Identify input channel from other connections
+                        if self._input_ws is None:
+                            for ws in self._all_ws_connections:
+                                if ws != websocket and not ws.closed:
+                                    self._input_ws = ws
+                                    logger.info("Meeting BaaS input channel identified")
+                                    break
+
+                    self._audio_chunk_count += 1
+                    if self._audio_chunk_count == 1:
+                        logger.info("First audio chunk received (%d bytes)", len(message))
+                    elif self._audio_chunk_count % 500 == 0:
+                        logger.info("Audio chunks received: %d", self._audio_chunk_count)
+
                     active_speaker = next(
                         (s for s in self._current_speakers if s.get("isSpeaking")),
                         None,
                     )
+                    speaker = active_speaker or self._last_known_speaker
                     audio_data = {
-                        "participant_id": str(active_speaker["id"]) if active_speaker else "unknown",
-                        "name": active_speaker["name"] if active_speaker else "unknown",
+                        "participant_id": str(speaker["id"]) if speaker else "unknown",
+                        "name": speaker["name"] if speaker else "unknown",
                         "audio": message,
                         "is_host": False,
-                        "timestamp": active_speaker.get("timestamp", 0) if active_speaker else 0,
+                        "timestamp": speaker.get("timestamp", 0) if speaker else 0,
                     }
                     await self._audio_queue.put(audio_data)
 
         except websockets.exceptions.ConnectionClosed:
-            logger.warning("Meeting BaaS WebSocket disconnected")
+            logger.warning("Meeting BaaS WebSocket disconnected (audio_source=%s)", is_audio_source)
         except Exception as e:
-            logger.error(f"WebSocket handler error: {e}")
+            logger.error("WebSocket handler error: %s", e)
         finally:
-            self._output_ws = None
+            self._all_ws_connections.discard(websocket)
+            if is_audio_source:
+                self._output_ws = None
+            elif self._input_ws == websocket:
+                self._input_ws = None
 
     async def leave_meeting(self) -> None:
         """Leave the current meeting via v2 API."""
@@ -155,7 +206,8 @@ class MeetingBaaSTransport(BaseMeetingTransport):
             return
 
         try:
-            response = requests.post(
+            response = await asyncio.to_thread(
+                requests.post,
                 f"{self.base_url}/v2/bots/{self.bot_id}/leave",
                 headers={
                     "Content-Type": "application/json",
@@ -176,18 +228,20 @@ class MeetingBaaSTransport(BaseMeetingTransport):
             await self._ws_server.wait_closed()
             self._ws_server = None
 
-        if self._ngrok_tunnel:
-            ngrok.disconnect(self._ngrok_tunnel.public_url)
-            self._ngrok_tunnel = None
+        if self._tunnel_manager:
+            await self._tunnel_manager.stop_tunnel()
+            self._tunnel_manager = None
 
         self.bot_id = None
         self._output_ws = None
         self._input_ws = None
+        self._all_ws_connections.clear()
 
     async def get_audio_stream(self) -> AsyncIterator[Dict[str, Any]]:
         """Get audio stream from the meeting.
 
         Yields audio data dicts as they arrive from Meeting BaaS.
+        Waits for the first connection before considering disconnection.
         """
         while True:
             try:
@@ -197,21 +251,43 @@ class MeetingBaaSTransport(BaseMeetingTransport):
                 )
                 yield audio_data
             except asyncio.TimeoutError:
-                # No audio received, check if still connected
-                if self._output_ws is None and self.bot_id is not None:
-                    logger.warning("WebSocket disconnected, ending audio stream")
-                    return
+                # Only end stream if a connection was previously established and then lost
+                if (
+                    self._ws_ever_connected
+                    and self._output_ws is None
+                    and self.bot_id is not None
+                ):
+                    # Wait up to 30 seconds for Meeting BaaS to reconnect
+                    logger.info("WebSocket disconnected, waiting for reconnection...")
+                    for i in range(30):
+                        await asyncio.sleep(1)
+                        if self._output_ws is not None:
+                            logger.info("WebSocket reconnected after %ds", i + 1)
+                            break
+                    else:
+                        logger.warning("WebSocket not reconnected after 30s, stopping")
+                        return
                 continue
 
     async def send_audio(self, audio_data: bytes) -> None:
-        """Send audio back to the meeting."""
-        if self._output_ws is None:
-            raise RuntimeError("Not connected to Meeting BaaS WebSocket")
+        """Send audio back to the meeting via the bidirectional connection."""
+        ws = self._output_ws
+        if ws is None:
+            # Wait briefly for WS reconnection instead of dropping audio
+            logger.warning("No WebSocket available, waiting up to 3s...")
+            for _ in range(30):
+                await asyncio.sleep(0.1)
+                ws = self._output_ws
+                if ws is not None:
+                    break
+            if ws is None:
+                logger.warning("WebSocket not available after 3s, dropping audio")
+                return
 
         try:
-            await self._output_ws.send(audio_data)
+            await ws.send(audio_data)
         except Exception as e:
-            logger.error(f"Error sending audio: {e}")
+            logger.error("Error sending audio: %s", e)
             raise
 
     async def get_participants(self) -> list[Dict[str, Any]]:

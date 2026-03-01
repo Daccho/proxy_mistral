@@ -36,7 +36,7 @@ Architecture Decision Records (ADRs) for the Meeting Proxy Agent.
 
 **Rationale**:
 - Bidirectional audio is the hardest part — Meeting BaaS handles this reliably
-- `audio_separate_raw` provides per-participant separated audio (essential for speaker identification)
+- v2 streaming provides per-participant speaker metadata + raw PCM audio over WebSocket (essential for speaker identification)
 - Bot customization available (name, avatar, entry message)
 - Dramatically reduces development time (weeks → days for meeting integration)
 - $0.69/h is acceptable for MVP validation
@@ -152,24 +152,23 @@ Architecture Decision Records (ADRs) for the Meeting Proxy Agent.
 
 ---
 
-## ADR-008: Speaker Identification via Meeting BaaS audio_separate_raw
+## ADR-008: Speaker Identification via Meeting BaaS v2 Streaming
 
-**Status**: Accepted
+**Status**: Accepted (updated for v2 API)
 
 **Context**: Need to know who said what during the meeting. Options:
-- Meeting BaaS `audio_separate_raw`: per-participant audio streams with participant metadata
+- Meeting BaaS v2 streaming: JSON speaker metadata + binary PCM audio over WebSocket
 - Speaker diarization model (pyannote, etc.): ML-based speaker separation
 - Voxtral Batch diarization: built-in speaker labels
 
-**Decision**: Use `audio_separate_raw` for real-time, Voxtral Batch for post-meeting.
+**Decision**: Use v2 streaming speaker metadata for real-time, Voxtral Batch for post-meeting.
 
 **Rationale**:
-- Real-time: `audio_separate_raw` gives us labeled audio per participant — no ML needed
-- Each participant's audio goes through STT separately → we know exactly who said what
+- Real-time: v2 streaming sends JSON metadata `[{name, id, timestamp, isSpeaking}]` interleaved with binary PCM audio — we track the active speaker and associate audio chunks with them
 - Post-meeting: Voxtral Batch (Transcribe V2) provides speaker diarization for higher accuracy
 - No need to train or deploy a separate diarization model
 
-**Trade-off**: Requires 4-core Meeting BaaS bot (vs 2-core for mixed audio). Slightly higher cost. Worth it for accurate attribution.
+**Trade-off**: Speaker attribution depends on the `isSpeaking` flag accuracy from Meeting BaaS. For overlapping speakers, only one is marked active at a time. Acceptable for MVP.
 
 ---
 

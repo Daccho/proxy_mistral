@@ -913,7 +913,7 @@ config = {
 **Install:**
 
 ```bash
-uv add "pipecat-ai[mistral,elevenlabs,daily,silero]"
+uv add "pipecat-ai[mistral,elevenlabs]"
 ```
 
 **Official docs:** [Introduction](https://docs.pipecat.ai/getting-started/introduction) | [Quickstart](https://docs.pipecat.ai/getting-started/quickstart) | [GitHub](https://github.com/pipecat-ai/pipecat)

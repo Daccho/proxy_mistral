@@ -42,3 +42,4 @@ data/
 
 # Local tool state
 .vibe/
+credentials.json
